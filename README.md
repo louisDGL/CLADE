@@ -53,13 +53,13 @@ inference (CAVI)**. It is deterministic, depends only on `numpy`/`scipy`, and ru
 All 51 tumours, identical SMC-Het scoring harness, head-to-head against the DECODE SFS/ABC
 engine (`DECODE_21`). Higher is better; full discussion in [`RESULTS.md`](RESULTS.md).
 
-| Sub-challenge      | CLADE | DECODE_21 (SFS/ABC) | Verdict                                 |
-|--------------------|:----------:|:-------------------:|-----------------------------------------|
-| 2A (assignment)    | **0.600**  | 0.567               | **win** (+0.033)                        |
-| 1A (purity)        | 0.962      | 0.961               | tie — and here *inferred*               |
-| 1B (cluster count) | 0.808      | 0.833               | behind, but ceiling lifted (0.78 → 0.81)|
-| 1C (prevalence)    | 0.937      | 0.942               | ≈ tie                                   |
-| runtime            | minutes    | hours               | **win**                                 |
+| Sub-challenge      | CLADE   | DECODE_21 (SFS/ABC) |
+|--------------------|:-------:|:-------------------:|
+| 2A (assignment)    | 0.600   | 0.567               |
+| 1A (purity)        | 0.962   | 0.961               |
+| 1B (cluster count) | 0.808   | 0.833               |
+| 1C (prevalence)    | 0.937   | 0.942               |
+| runtime            | minutes | hours               |
 
 **Takeaway.** CLADE is a strictly better *assignment* engine and far faster. Its old
 *cluster-count* (1B) ceiling of ~0.79 was lifted to **0.808** by tempering the ICL entropy term
