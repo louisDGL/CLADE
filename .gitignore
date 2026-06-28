@@ -20,3 +20,6 @@ scoring/truth/**/*.2B.gz
 
 # Latex doc
 docs/*
+
+# Comparison results
+RESULTS.md
