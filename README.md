@@ -190,8 +190,7 @@ the exact import closure needed for challenges 1A/1B/1C/2A/2B). It was **ported 
 
 ---
 
-# How the algorithm works (detailed
-)
+# How the algorithm works (detailed)
 
 This section explains the model and every computational step precisely, with pointers to the
 code. The mathematics matches [`model/dpbb_vi.py`](model/dpbb_vi.py) line for line.
