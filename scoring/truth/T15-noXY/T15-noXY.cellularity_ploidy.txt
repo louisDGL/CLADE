@@ -1,0 +1,2 @@
+cellularity	ploidy
+0.78936	1.97725423505202

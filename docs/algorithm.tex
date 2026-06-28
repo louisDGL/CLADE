@@ -1,0 +1,547 @@
+\documentclass[11pt,a4paper]{article}
+
+% ---------------------------------------------------------------------------
+% DECODE_2_2 — note de méthodes : le moteur de déconvolution sous-clonale
+% (mélange de processus de Dirichlet de Beta-Binomiales, inférence variationnelle)
+% Compilation :  pdflatex algorithm.tex  (deux passes pour la table des matières)
+% ---------------------------------------------------------------------------
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+% babel-french n'est pas garanti présent : on définit les guillemets français à la main
+% (les caractères « » viennent de l'encodage T1).
+\providecommand{\og}{\guillemotleft~}
+\providecommand{\fg}{~\guillemotright}
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools,bm}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage[colorlinks=true,linkcolor=blue!55!black,citecolor=blue!55!black,%
+            urlcolor=blue!55!black]{hyperref}
+
+% --- opérateurs et macros ---
+\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator{\BetaBin}{BetaBin}
+\DeclareMathOperator{\Binom}{Bin}
+\DeclareMathOperator{\Cat}{Cat}
+\DeclareMathOperator{\Bdist}{Beta}
+\DeclareMathOperator{\Dir}{Dir}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\KL}{\mathrm{KL}}
+\newcommand{\softmax}{\operatorname{softmax}}
+\newcommand{\lse}{\operatorname{logsumexp}}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\phigrid}{\bm{\phi}}
+\newcommand{\Rmat}{\mathbf{R}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\half}{\tfrac12}
+
+\theoremstyle{remark}
+\newtheorem*{remarque}{Remarque}
+
+\title{\textbf{DECODE\_2\_2}\\[2pt]
+\large Reconstruction sous-clonale par mélange de processus de Dirichlet
+de Beta-Binomiales,\\ inférence variationnelle en champ moyen}
+\author{Note de méthodes}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+\textbf{DECODE\_2\_2} reconstruit l'architecture sous-clonale d'une tumeur à partir
+d'un \emph{unique} échantillon de séquençage ADN bulk : il infère \emph{combien} de
+sous-clones existent, \emph{quelle fraction de cellules} chacun occupe, et \emph{quelle
+mutation appartient à quel clone}, directement à partir des comptages de reads. Le moteur
+est un \emph{mélange de processus de Dirichlet tronqué d'émissions Beta-Binomiales}, dont
+la fraction cellulaire (CCF) de chaque composante est représentée par une catégorielle sur
+une grille fixe (l'astuce de tractabilité de PyClone-VI), ajusté par \emph{inférence
+variationnelle en champ moyen} (montée par coordonnées, CAVI). Une composante de
+\emph{queue neutre} en loi de puissance ($1/f$, style MOBSTER) absorbe le continuum
+mutationnel neutre pour éviter le sur-découpage ; la pureté est \emph{inférée} en
+maximisant l'ELBO ; et le nombre de clusters est choisi par \emph{fusion agglomérative
+guidée par l'ICL}, \og{}N-aware\fg{} et à entropie tempérée. L'ensemble est déterministe,
+ne dépend que de \code{numpy}/\code{scipy}, et tourne en quelques minutes pour les 51
+tumeurs du jeu de données. Cette note décrit précisément le modèle et chaque étape de
+calcul, en renvoyant au code source (\code{model/dpbb\_vi.py}).
+\end{abstract}
+
+\tableofcontents
+\medskip
+\hrule
+
+% ===========================================================================
+\section{Introduction et énoncé du problème}
+% ===========================================================================
+
+Un échantillon tumoral \emph{bulk} est un mélange de cellules normales et d'une ou
+plusieurs populations tumorales (\emph{sous-clones}), chacune définie par l'ensemble des
+mutations qu'elle porte. Chaque mutation somatique $n$ est observée à travers $b_n$ reads
+portant l'allèle variant sur une profondeur totale $d_n$. La \emph{fréquence allélique
+variante} (VAF) observée, $b_n/d_n$, dépend de trois facteurs : la fraction de cellules
+tumorales portant la mutation --- sa \emph{cancer cell fraction} (CCF) ---, le nombre de
+copies local (\emph{copy number}), et la \emph{pureté} $\rho$ de l'échantillon (fraction de
+cellules tumorales). La reconstruction sous-clonale inverse cette relation : regrouper les
+mutations qui partagent une CCF (un clone ou sous-clone), estimer la CCF de chaque groupe,
+et récupérer la pureté.
+
+Le défi DREAM SMC-Het évalue exactement ces quantités. Le
+tableau~\ref{tab:challenges} les liste, avec la réponse fournie par DECODE\_2\_2.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}cll@{}}
+\toprule
+Sous-défi & Question & Réponse de DECODE\_2\_2 \\
+\midrule
+\textbf{1A} & pureté de l'échantillon            & $\rho$ inféré par l'ELBO \\
+\textbf{1B} & nombre de clusters                  & $K'$ après sélection \\
+\textbf{1C} & taille + prévalence cellulaire des clusters & comptes par cluster, $\phi_k\,\rho$ \\
+\textbf{2A} & assignation dure par mutation       & $\hat z_n=\argmax_k r_{n,k}$ \\
+\textbf{2B} & matrice de co-clustering (soft)     & $\Rmat\,\Rmat^{\!\top}$ \\
+\bottomrule
+\end{tabular}
+\caption{Les sous-défis SMC-Het et les sorties correspondantes.}
+\label{tab:challenges}
+\end{table}
+
+% ===========================================================================
+\section{Notations}
+% ===========================================================================
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}ll@{\hspace{2.2em}}ll@{}}
+\toprule
+$N$ & nombre de mutations & $\rho$ & pureté (fraction de cellules tumorales) \\
+$b_n$ & reads variants de la mutation $n$ & $\phi\in(0,1]$ & CCF (cancer cell fraction) \\
+$d_n$ & profondeur (reads totaux) & $\xi_n(\phi)$ & VAF attendu (\S\ref{sec:vaf}) \\
+$c_n$ & copy number total au locus & $G$ & taille de la grille de CCF ($=100$) \\
+$m_n$ & multiplicité (copies mutées) & $K$ & troncature DP ($K_{\max}=12$) \\
+$s$ & précision Beta-Binomiale ($=200$) & $\alpha$ & concentration DP ($=1$) \\
+$\pi_k$ & poids de mélange du cluster $k$ & $r_{n,k}$ & responsabilité (resp.\ douce) \\
+$\Phi_{k,g}$ & loi de CCF du cluster $k$ sur la grille & $N_k$ & masse du cluster $k$, $\sum_n r_{n,k}$ \\
+\bottomrule
+\end{tabular}
+\caption{Symboles principaux.}
+\label{tab:notation}
+\end{table}
+
+% ===========================================================================
+\section{Du comptage de reads au VAF attendu}\label{sec:vaf}
+% ===========================================================================
+
+Pour une mutation $n$ de copy number total $c_n$ et de multiplicité $m_n$ (nombre de copies
+chromosomiques tumorales portant la mutation), dans un échantillon de pureté $\rho$, une
+population de CCF $\phi$ produit un \textbf{VAF attendu}
+\begin{equation}\label{eq:xi}
+\boxed{\;\xi_n(\phi) \;=\; \frac{\rho\,m_n\,\phi}{\rho\,c_n + 2\,(1-\rho)}\;}
+\end{equation}
+Le dénominateur est la ploïdie moyenne au locus (les $c_n$ copies tumorales pondérées par
+$\rho$, plus $2$ copies normales pondérées par $1-\rho$) ; le numérateur compte les copies
+mutées. La valeur est bornée à $(\,10^{-6},\,1-10^{-6}\,)$ pour la stabilité numérique.
+Inverser~\eqref{eq:xi} fournit la CCF par maximum de vraisemblance d'une mutation,
+\begin{equation}\label{eq:phimle}
+\hat\phi_n \;=\; \frac{b_n}{d_n}\cdot\frac{\rho\,c_n + 2\,(1-\rho)}{\rho\,m_n},
+\end{equation}
+utilisée à l'initialisation (\S\ref{sec:init}) et pour la visualisation. Implémentation :
+\code{\_expected\_vaf} (\code{model/dpbb\_vi.py}).
+
+% ===========================================================================
+\section{Représentation sur grille et émission Beta-Binomiale}
+% ===========================================================================
+
+L'émission Beta-Binomiale n'est pas conjuguée à un prior sur $\phi$. Deux idées la rendent
+calculable.
+
+\paragraph{(i) Grille de CCF (PyClone-VI).} On discrétise $\phi$ sur une grille fixe
+\begin{equation}
+\phi_g = \frac{g-\half}{G}, \qquad g=1,\dots,G,
+\end{equation}
+et la CCF de chaque cluster devient une \emph{catégorielle} sur cette grille. La
+log-vraisemblance d'émission par mutation et par point de grille est précalculée une seule
+fois sous forme d'une matrice $N\times G$,
+\begin{equation}\label{eq:LL}
+\mathrm{LL}[n,g] \;=\; \log p\!\left(b_n \mid d_n,\ \xi_n(\phi_g)\right),
+\end{equation}
+\emph{partagée par tous les clusters} : un cluster ne diffère que par sa loi $\Phi_{k,\cdot}$
+sur la grille. C'est la source principale de la rapidité du moteur. Implémentation :
+\code{\_emission\_loglik}.
+
+\paragraph{(ii) Émission Beta-Binomiale.} Avec une précision $s$ (sur-dispersion des reads),
+on pose $\alpha_n=\xi_n s$ et $\beta_n=(1-\xi_n)s$ et
+\begin{equation}\label{eq:bbll}
+\log p(b_n\mid d_n,\xi_n)
+= \log B\!\big(b_n+\xi_n s,\ d_n-b_n+(1-\xi_n)s\big)\;-\;\log B\!\big(\xi_n s,\ (1-\xi_n)s\big)
+\;+\;\text{cste},
+\end{equation}
+où $\log B(x,y)=\ln\Gamma(x)+\ln\Gamma(y)-\ln\Gamma(x+y)$ et la constante
+$\log\binom{d_n}{b_n}$ est omise (sans effet sur l'optimisation). Quand $s\to\infty$ on
+retrouve l'émission \emph{binomiale} $b_n\log\xi_n+(d_n-b_n)\log(1-\xi_n)$ ; mais une
+binomiale sous-estime la dispersion et tend à \emph{sur-découper}, d'où le choix $s=200$ par
+défaut.
+
+% ===========================================================================
+\section{Modèle génératif : mélange de processus de Dirichlet tronqué}
+% ===========================================================================
+
+On utilise une construction \emph{stick-breaking} (Sethuraman, 1994) du processus de
+Dirichlet, tronquée à $K=K_{\max}$ composantes :
+\begin{align}
+v_k &\sim \Bdist(1,\alpha), & k&=1,\dots,K, \label{eq:stick}\\
+\pi_k &= v_k \prod_{j<k}(1-v_j), \\
+\phi_k &\sim \Cat(\text{grille de CCF}), \\
+z_n &\sim \Cat(\bm\pi), \\
+b_n \mid z_n,\phi &\sim \BetaBin\!\big(d_n,\ \xi_n(\phi_{z_n}),\ s\big).
+\end{align}
+La troncature borne le nombre de composantes à $K$, mais le prior stick-breaking pousse les
+poids des composantes inutilisées vers $\approx 0$ : le nombre \emph{effectif} de clusters
+est appris, non fixé. Le prior sur $\phi_k$ est uniforme sur la grille,
+$p(\phi_k=\phi_g)=1/G$.
+
+% ===========================================================================
+\section{Inférence variationnelle en champ moyen (CAVI)}
+% ===========================================================================
+
+\subsection{Famille variationnelle et ELBO}
+
+On approxime le postérieur par la loi factorisée
+\begin{equation}
+q(\bm z,\bm v,\bm\phi)=\prod_{n=1}^{N} q(z_n)\ \prod_{k=1}^{K} q(v_k)\ \prod_{k=1}^{K} q(\phi_k),
+\end{equation}
+avec $q(z_n)=\Cat(r_{n,\cdot})$, $q(v_k)=\Bdist(a_k,b_k)$ et $q(\phi_k)=\Cat(\Phi_{k,\cdot})$.
+On maximise la borne inférieure de l'évidence (ELBO),
+\begin{equation}\label{eq:elbo}
+\mathcal{L}(q)=\E_q\!\big[\log p(\bm b,\bm z,\bm v,\bm\phi)\big]-\E_q\!\big[\log q\big],
+\end{equation}
+par montée par coordonnées : chaque facteur est optimisé en forme close, les autres étant
+fixés.
+
+\subsection{Mises à jour par coordonnées}
+
+Posons l'\emph{évidence attendue} de la mutation $n$ pour le cluster Beta $k$,
+\begin{equation}\label{eq:elik}
+\mathrm{Elik}_{n,k}\;=\;\E_{q(\phi_k)}\!\big[\log p(b_n\mid\phi_k)\big]\;=\;\sum_{g}\Phi_{k,g}\,\mathrm{LL}[n,g]
+\;=\;(\mathrm{LL}\,\Phi^{\!\top})_{n,k}.
+\end{equation}
+
+\paragraph{CCF des clusters $q(\phi_k)$.} La mise à jour est un softmax sur la grille de la
+somme des log-vraisemblances pondérée par les responsabilités :
+\begin{equation}\label{eq:phiupdate}
+\log\Phi_{k,g}\;\propto\;\log\tfrac1G \;+\; \sum_{n} r_{n,k}\,\mathrm{LL}[n,g],
+\qquad
+\Phi_{k,\cdot}=\softmax_g\!\Big(\log\tfrac1G + (\Rmat^{\!\top}\mathrm{LL})_{k,g}\Big).
+\end{equation}
+La CCF ponctuelle d'un cluster s'en déduit par $\phi_k=\sum_g\Phi_{k,g}\,\phi_g$.
+
+\paragraph{Poids stick-breaking $q(v_k)$.} Avec $N_k=\sum_n r_{n,k}$,
+\begin{equation}\label{eq:stickupdate}
+a_k = 1+N_k,\qquad b_k=\alpha+\sum_{j>k}N_j,
+\end{equation}
+et les log-poids attendus suivent des identités digamma ($\psi$) :
+\begin{equation}\label{eq:digamma}
+\E[\log v_k]=\psi(a_k)-\psi(a_k+b_k),\quad
+\E[\log(1-v_k)]=\psi(b_k)-\psi(a_k+b_k),\quad
+\E[\log\pi_k]=\E[\log v_k]+\!\sum_{j<k}\!\E[\log(1-v_j)].
+\end{equation}
+
+\paragraph{Responsabilités $q(z_n)$.}
+\begin{equation}\label{eq:rupdate}
+r_{n,k}\;\propto\;\exp\!\Big(\E[\log\pi_k]+\mathrm{Elik}_{n,k}\Big),
+\qquad \sum_k r_{n,k}=1.
+\end{equation}
+
+\subsection{La borne ELBO, terme à terme}
+
+En injectant les facteurs dans~\eqref{eq:elbo} et en utilisant le prior uniforme sur
+$\phi_k$, l'ELBO se décompose en
+\begin{equation}\label{eq:elbofull}
+\mathcal{L}=
+\underbrace{\sum_{n,k} r_{n,k}\big(\E[\log\pi_k]+\mathrm{Elik}_{n,k}\big)}_{\text{données + assignation}}
+\;+\;\underbrace{\sum_{n} \mathcal H[q(z_n)]}_{\text{entropie de }z}
+\;+\;\underbrace{\sum_{k}\mathcal H[q(\phi_k)] + K\log\tfrac1G}_{\text{terme CCF}}
+\;-\;\underbrace{\sum_{k}\KL\!\big(q(v_k)\,\|\,\Bdist(1,\alpha)\big)}_{\text{KL stick-breaking}},
+\end{equation}
+avec $\mathcal H[q(z_n)]=-\sum_k r_{n,k}\log r_{n,k}$ et
+$\mathcal H[q(\phi_k)]=-\sum_g\Phi_{k,g}\log\Phi_{k,g}$. La KL de
+$\Bdist(a,b)$ à $\Bdist(1,\alpha)$ admet la forme close
+\begin{equation}\label{eq:klbeta}
+\KL=(a-1)\,\E[\log v]+(b-\alpha)\,\E[\log(1-v)]
+-\big(\log B(a,b)\big)+\big(\log B(1,\alpha)\big).
+\end{equation}
+L'itération s'arrête lorsque la variation relative de $\mathcal L$ passe sous
+$\text{tol}=10^{-5}$ (ou après \code{max\_iter}$=400$ balayages). Le
+pseudocode~\ref{alg:cavi} résume le tout.
+
+\begin{algorithm}[t]
+\caption{CAVI pour un redémarrage (\code{\_fit\_once})}
+\label{alg:cavi}
+\begin{algorithmic}[1]
+\REQUIRE $\mathrm{LL}\in\R^{N\times G}$, troncature $K$, concentration $\alpha$
+\STATE $\hat\phi_n\gets \phi_{\argmax_g \mathrm{LL}[n,g]}$ \COMMENT{CCF-MLE par mutation, \eqref{eq:phimle}}
+\STATE centres $\gets$ k-means++$(\hat\phi,\,K)$ ; initialiser $\Phi$ par des gaussiennes autour des centres
+\STATE initialiser $r$ depuis $\Phi$ \COMMENT{évite l'effondrement au premier pas}
+\REPEAT
+  \STATE $\Phi \gets \softmax_g\big(\log\tfrac1G + \Rmat^{\!\top}\mathrm{LL}\big)$ \COMMENT{CCF des clusters, \eqref{eq:phiupdate}}
+  \STATE $N_k\gets\sum_n r_{n,k}$ ; $a_k\gets 1+N_k$ ; $b_k\gets\alpha+\sum_{j>k}N_j$ ; calculer $\E[\log\pi_k]$ \eqref{eq:digamma}
+  \STATE $\mathrm{Elik}\gets \mathrm{LL}\,\Phi^{\!\top}$ ; $r_{n,k}\gets\softmax_k(\E[\log\pi_k]+\mathrm{Elik}_{n,k})$ \COMMENT{\eqref{eq:rupdate}}
+  \STATE évaluer $\mathcal L$ \eqref{eq:elbofull}
+\UNTIL{$|\Delta\mathcal L| < \text{tol}\,(|\mathcal L|+1)$}
+\STATE \textbf{retour} $r,\ \{\phi_k=\sum_g\Phi_{k,g}\phi_g\},\ \mathcal L$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Initialisation et redémarrages}\label{sec:init}
+
+Un départ plat ferait s'effondrer toutes les composantes sur le pic clonal dominant. À la
+place, chaque redémarrage initialise les CCF des clusters par \textbf{k-means++} sur les
+CCF-MLE par mutation $\hat\phi_n$~\eqref{eq:phimle} (\code{\_kmeanspp\_centers}), de sorte que
+les composantes démarrent à des prévalences \emph{distinctes}. Le fit complet est répété
+\code{n\_restarts}$=10$ fois (graines différentes), et l'on conserve le redémarrage de
+\textbf{meilleur ELBO} (\code{fit\_dpbb\_vi}). C'est l'analogue variationnel du \og{}fix
+multi-restart\fg{} des échantillonneurs SMC.
+
+% ===========================================================================
+\section{La composante de queue neutre $1/f$}
+% ===========================================================================
+
+Sous évolution tumorale neutre, le spectre des mutations sous-clonales suit une loi de
+puissance $M(f)\propto f^{-\gamma}$ (Williams \emph{et al.}, 2016). Un mélange de Beta pures
+\og{}explique\fg{} ce continuum lisse en le \textbf{sur-découpant en clusters fantômes} :
+c'est le mode d'échec dominant sur les échantillons simulés. On ajoute donc une composante
+\emph{fixe} (la colonne $k=0$), de loi de CCF en loi de puissance
+\begin{equation}\label{eq:tail}
+g^{\mathrm{tail}}_g \;\propto\; \phi_g^{-\,\text{exponent}}\quad\text{pour }\phi_g\ge\text{tail\_min\_ccf},\ \text{sinon }0,
+\end{equation}
+normalisée (\code{neutral\_tail\_grid}, $\text{exponent}=2$, $\text{tail\_min\_ccf}=0.03$).
+
+\begin{remarque}
+La contribution de la queue à une mutation est sa \textbf{vraie log-vraisemblance
+marginale}, et \emph{non} l'espérance de champ moyen :
+\begin{equation}\label{eq:tailmarg}
+\mathrm{Elik}^{\mathrm{tail}}_n=\log\sum_g g^{\mathrm{tail}}_g\,p(b_n\mid d_n,\phi_g)
+=\lse_g\!\big(\log g^{\mathrm{tail}}_g+\mathrm{LL}[n,g]\big).
+\end{equation}
+En effet, une loi diffuse perdrait toujours la comparaison de champ moyen
+$\E[\log p]$ face à une Beta piquée ; la marginale~\eqref{eq:tailmarg} corrige ce biais.
+\end{remarque}
+
+La queue absorbe les mutations neutres diffuses pour que les Beta cessent de sur-découper.
+Ce \emph{n'est pas} une lignée sous-clonale : elle est retirée en post-traitement (elle ne
+compte pas dans 1B/1C), et ses mutations sont réaffectées au cluster Beta le plus proche
+(elle contribue donc encore à 2A/2B).
+
+% ===========================================================================
+\section{Inférence de la pureté (1A)}
+% ===========================================================================
+
+La pureté est d'abord \emph{semée} : soit depuis le fichier Battenberg
+(\code{cellularity\_ploidy.txt}), soit estimée depuis les SNV diploïdes clonaux où
+$\text{VAF}\approx\rho/2$ (\code{estimate\_purity}). Avec \code{purity\_search}, on
+l'\emph{infère} ensuite en ajustant la VI sur une grille de $\rho$ autour du seed et en
+gardant la valeur qui \textbf{maximise l'ELBO} --- une borne inférieure de
+$\log p(\text{données}\mid\rho)$ :
+\begin{equation}\label{eq:purity}
+\hat\rho=\argmax_{\rho\,\in\,[\,\text{seed}\pm\text{span}\,]}\ \mathcal L\big(\text{fit}(\rho)\big),
+\qquad \text{(\code{purity\_steps}=7 points)}.
+\end{equation}
+$\hat\rho$ est la prédiction du sous-défi 1A --- un sous-produit, non une entrée
+(\code{steps/01\_cluster.py}).
+
+% ===========================================================================
+\section{Sélection du nombre de clusters par fusion ICL}
+% ===========================================================================
+
+Après le fit, on choisit le nombre de clusters par \textbf{fusion agglomérative guidée par
+l'ICL} (Integrated Completed Likelihood ; Baudry \emph{et al.}, 2010,
+\code{\_icl\_merge}). On part des composantes Beta retenues, et l'on \emph{fusionne
+itérativement la paire qui maximise l'ICL}, jusqu'à ce qu'aucune fusion ne l'améliore. Pour
+un état à $K$ clusters de poids $\pi_k$, de responsabilités $\Rmat$ et de CCF ponctuelles
+$\phi_k$, on définit
+\begin{equation}\label{eq:icl}
+\boxed{\;
+\mathrm{ICL}=
+\underbrace{\sum_{n}\log\sum_{k}\pi_k\,p(b_n\mid\phi_k)}_{\text{log-vraisemblance observée}}
+\;-\;w_{\mathrm{pen}}\underbrace{\half\!\Big[(K-1)\log N+\sum_k\log N_k\Big]}_{\text{pénalité \og{}N-aware\fg{}}}
+\;-\;w_{\mathrm{ent}}\underbrace{\Big(-\!\sum_{n,k} r_{n,k}\log r_{n,k}\Big)}_{\text{entropie d'assignation}}
+\;}
+\end{equation}
+où $p(b_n\mid\phi_k)$ est évaluée à la CCF \emph{ponctuelle} du cluster (le point de grille
+le plus proche), et $N_k=\sum_n r_{n,k}$.
+
+\paragraph{Pourquoi la CCF ponctuelle.} Fusionner deux CCF réellement distinctes produit une
+CCF intermédiaire qui n'explique bien ni l'une ni l'autre : la chute de log-vraisemblance
+\emph{bloque} la fusion. À l'inverse, deux composantes sur-découpées (CCF quasi égales)
+fusionnent librement. C'est le remplacement principié d'un seuil de fusion fixe.
+
+\paragraph{Pénalité \og{}N-aware\fg{}.} Les $K-1$ poids de mélange sont informés par tout
+l'échantillon (terme $\log N$), mais la CCF de chaque cluster n'est informée que par les
+$N_k$ mutations qui lui sont assignées (terme $\log N_k$). Sans cela, un petit sous-clone
+réel ($N_k\approx 200$) serait pénalisé par $\log N$ ($N\approx 10^5$) dans une grande tumeur
+clonale-dominée --- la cause du sous-clustering de l'ICL à grand $N$.
+
+\paragraph{Entropie tempérée $w_{\mathrm{ent}}=\code{icl\_ent\_w}=0.25$.} À plein poids
+($w_{\mathrm{ent}}=1$), l'entropie d'assignation fusionne aussi les \emph{vrais} sous-clones
+clairsemés (peu de mutations, faible profondeur $\Rightarrow$ assignation ambiguë $\Rightarrow$
+forte entropie). Or, une fois la queue neutre (\S\,7) en place pour absorber le continuum,
+cette protection anti-sur-découpage est \emph{redondante}. La tempérer ($w_{\mathrm{ent}}<1$)
+découple les deux rôles : la queue rejette le continuum, une entropie allégée n'arrête que
+les vrais sur-découpages. Un balayage sur la cohorte montre un optimum net à $0.25$, qui
+fait passer le score 1B de $\approx 0.79$ à $\mathbf{0.808}$ sans coût sur 2A/1C
+(le terme $w_{\mathrm{pen}}=\code{icl\_pen\_w}$ tempère analoguement la pénalité, façon
+postérieur grossi de Miller--Dunson, 2019).
+
+\begin{algorithm}[t]
+\caption{Fusion agglomérative guidée par l'ICL (\code{\_icl\_merge})}
+\label{alg:icl}
+\begin{algorithmic}[1]
+\REQUIRE responsabilités $\Rmat$, CCF $\{\phi_k\}$, matrice $\mathrm{LL}$
+\STATE $\mathrm{cur}\gets\mathrm{ICL}(\Rmat,\{\phi_k\})$ \COMMENT{\eqref{eq:icl}}
+\WHILE{le nombre de clusters $>1$}
+  \FORALL{paires $(j,\ell)$}
+    \STATE CCF fusionnée $\phi_m\gets(\pi_j\phi_j+\pi_\ell\phi_\ell)/(\pi_j+\pi_\ell)$
+    \STATE responsabilités fusionnées : colonne $r_{\cdot j}+r_{\cdot\ell}$
+    \STATE gain $\gets \mathrm{ICL}(\text{état fusionné})-\mathrm{cur}$
+  \ENDFOR
+  \IF{le meilleur gain $\le 0$}
+    \STATE \textbf{break}
+  \ENDIF
+  \STATE appliquer la meilleure fusion ; $\mathrm{cur}\mathrel{+}=\text{gain}$
+\ENDWHILE
+\STATE \textbf{retour} $\Rmat,\ \{\phi_k\}$
+\end{algorithmic}
+\end{algorithm}
+
+% ===========================================================================
+\section{Post-traitement et sorties}
+% ===========================================================================
+
+\code{postprocess} transforme le fit brut en clustering final :
+\begin{enumerate}[leftmargin=2.2em]
+\item \textbf{Retirer la queue} (colonne $0$) et mémoriser sa masse
+      $\text{tail\_frac}=\frac1N\sum_n r_{n,0}$.
+\item \textbf{Élaguer} les composantes Beta de masse $N_k<\max(1,\ \code{mass\_floor\_frac}\cdot N)$
+      ($\code{mass\_floor\_frac}=0.005$).
+\item \textbf{Sélectionner $K'$} par fusion ICL (Algorithme~\ref{alg:icl}) ; une variante
+      \code{selection="merge"} fournit une fusion par seuil de CCF fixe (\emph{baseline}).
+\item \textbf{Réétiqueter} : renormaliser les responsabilités, assigner durement
+      $\hat z_n=\argmax_k r_{n,k}$, retirer les clusters vides, puis \emph{trier par CCF
+      décroissante} (cluster $1$ = pic clonal) pour des labels stables.
+\end{enumerate}
+La sortie par échantillon (\code{results/<sid>\_dpbbvi.npz}) contient : \code{hard}
+($\hat z_n$), \code{soft} ($\Rmat\in\R^{N\times K'}$), \code{ccf} ($\phi_k$), \code{counts}
+($N_k$), \code{purity} ($\hat\rho$), \code{n\_clusters} ($K'$) et \code{elbo}.
+
+% ===========================================================================
+\section{Correspondance avec les sous-défis SMC-Het}
+% ===========================================================================
+
+L'étape \code{02\_scoring\_files.py} aligne le clustering sur l'ordre exact des mutations du
+VCF de scoring, puis produit (cf.\ tableau~\ref{tab:challenges}) :
+\textbf{1A} $=\hat\rho$ ;
+\textbf{1B} $=K'$ ;
+\textbf{1C} : comptes par cluster + prévalence cellulaire $\phi_k\,\rho$ ;
+\textbf{2A} : $\hat z_n$ en ordre VCF ;
+\textbf{2B} (optionnel) : la matrice de co-clustering $\mathrm{CCM}=\Rmat\,\Rmat^{\!\top}$
+(probabilité que deux mutations partagent un cluster). Les mutations absentes de la table
+sont assignées au cluster clonal par défaut.
+
+% ===========================================================================
+\section{Complexité et déterminisme}
+% ===========================================================================
+
+Le coût dominant par balayage CAVI est le produit $\mathrm{LL}\,\Phi^{\!\top}$ et
+$\Rmat^{\!\top}\mathrm{LL}$, en $O(NKG)$. La matrice d'émission $\mathrm{LL}$ ($O(NG)$) est
+calculée une seule fois. Avec $G=100$, $K\le 12$, et $N$ de l'ordre de $10^3$--$10^4$, le fit
+d'un échantillon (10 redémarrages $\times$ 7 valeurs de pureté) prend de l'ordre de la
+seconde à la minute. L'algorithme est \emph{déterministe} (graines fixées) et ne dépend que
+de \code{numpy}/\code{scipy}.
+
+% ===========================================================================
+\appendix
+\section{Rappels utiles}
+% ===========================================================================
+
+\paragraph{Beta-Binomiale.} Pour $b\sim\BetaBin(d,\alpha,\beta)$ avec $\alpha=\xi s$,
+$\beta=(1-\xi)s$ et $s=\alpha+\beta$ :
+\[
+\E[b]=d\,\xi,\qquad \operatorname{Var}[b]=d\,\xi(1-\xi)\,\frac{d+s}{s+1}.
+\]
+La variance du VAF $b/d$ vaut donc $\xi(1-\xi)(d+s)/\big(d(s+1)\big)$, qui tend vers la
+variance binomiale $\xi(1-\xi)/d$ lorsque $s\to\infty$. (Ces moments servent à tracer le SFS
+postérieur-prédictif, annexe~\ref{app:sfs}.)
+
+\paragraph{Digamma.} $\psi(x)=\frac{d}{dx}\ln\Gamma(x)$ ; pour
+$v\sim\Bdist(a,b)$, $\E[\log v]=\psi(a)-\psi(a+b)$.
+
+% ---------------------------------------------------------------------------
+\section{Visualisation : SFS postérieur-prédictif}\label{app:sfs}
+% ---------------------------------------------------------------------------
+
+Le script \code{steps/04\_plots.py} reproduit la figure SFS de DECODE : l'histogramme du
+spectre observé (VAF ou CCF) recouvert du modèle ajusté, décomposé en aires colorées
+empilées par cluster. Pour le cluster $k$ (CCF ponctuelle $\phi_k$, poids
+$\pi_k=N_k/N$), le nombre attendu de mutations dans un intervalle de fréquence $I$ est
+\[
+\widehat{\text{count}}_k(I)=\pi_k\sum_{n=1}^{N} \Pr\!\big(\text{freq}_n\in I \mid d_n,\ \xi_n(\phi_k),\ s\big),
+\]
+les probabilités d'intervalle étant obtenues par une approximation gaussienne de moments
+Beta-Binomiaux (annexe~A) --- équivalent lisse et rapide de l'émission exacte.
+
+% ===========================================================================
+\section{Correspondance symboles $\leftrightarrow$ code}
+% ===========================================================================
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Concept & Symbole / équation & Fonction (\code{model/dpbb\_vi.py}, sauf indication) \\
+\midrule
+VAF attendu          & $\xi_n(\phi)$, \eqref{eq:xi}          & \code{\_expected\_vaf} \\
+Émission             & $\mathrm{LL}[n,g]$, \eqref{eq:LL}     & \code{\_emission\_loglik} \\
+Init.\ k-means++     & $\hat\phi_n$, \eqref{eq:phimle}       & \code{\_kmeanspp\_centers} \\
+Boucle CAVI          & Alg.~\ref{alg:cavi}, \eqref{eq:elbofull} & \code{\_fit\_once} \\
+Redémarrages         & meilleur ELBO                         & \code{fit\_dpbb\_vi} \\
+Queue neutre         & $g^{\mathrm{tail}}$, \eqref{eq:tail}--\eqref{eq:tailmarg} & \code{neutral\_tail\_grid} \\
+Pureté               & $\hat\rho$, \eqref{eq:purity}         & \code{steps/01\_cluster.py} \\
+Score ICL            & \eqref{eq:icl}                        & \code{\_icl} \\
+Fusion ICL           & Alg.~\ref{alg:icl}                    & \code{\_icl\_merge} \\
+Post-traitement      & \S 10                                 & \code{postprocess} \\
+\bottomrule
+\end{tabular}
+\caption{De la notation mathématique au code source.}
+\label{tab:code}
+\end{table}
+
+% ===========================================================================
+\begin{thebibliography}{9}
+% ===========================================================================
+\bibitem{pycllonevi} A.~Gillis, J.~Roth. \emph{PyClone-VI: scalable inference of clonal
+population structures}. BMC Bioinformatics, 2020.
+\bibitem{sethuraman} J.~Sethuraman. \emph{A constructive definition of Dirichlet priors}.
+Statistica Sinica, 1994.
+\bibitem{bleijordan} D.~Blei, M.~Jordan. \emph{Variational inference for Dirichlet process
+mixtures}. Bayesian Analysis, 2006.
+\bibitem{biernacki} C.~Biernacki, G.~Celeux, G.~Govaert. \emph{Assessing a mixture model for
+clustering with the integrated completed likelihood}. IEEE TPAMI, 2000.
+\bibitem{baudry} J.-P.~Baudry \emph{et al.} \emph{Combining mixture components for
+clustering}. JCGS, 2010.
+\bibitem{williams} M.~Williams \emph{et al.} \emph{Identification of neutral tumor evolution
+across cancer types}. Nature Genetics, 2016.
+\bibitem{mobster} G.~Caravagna \emph{et al.} \emph{Subclonal reconstruction of tumors using
+machine learning (MOBSTER)}. Nature Genetics, 2020.
+\bibitem{millerdunson} J.~Miller, D.~Dunson. \emph{Robust Bayesian inference via coarsening}.
+JASA, 2019.
+\bibitem{salcedo} A.~Salcedo \emph{et al.} \emph{A community effort to create standards for
+evaluating tumor subclonal reconstruction (SMC-Het / DREAM)}. Nature Biotechnology, 2020.
+\end{thebibliography}
+
+\end{document}

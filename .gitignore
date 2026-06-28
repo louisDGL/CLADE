@@ -1,0 +1,22 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+
+# ---- Run logs ----
+logs/
+*.log
+
+# ---- Generated outputs (regenerable via the pipeline) ----
+results/*
+!results/.gitkeep
+scoring/scores/*
+!scoring/scores/.gitkeep
+scoring/pred_soft/
+plots/
+
+# ---- Oversized 2B co-clustering ground truth ----
+# These *.truth.2B.gz files (up to ~2 GB each) exceed GitHub's 100 MB/file limit.
+scoring/truth/**/*.2B.gz
+
+# Latex doc
+docs/*
