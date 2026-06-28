@@ -1,4 +1,4 @@
-# CLADE — DP Beta-Binomial VI for subclonal reconstruction
+# CLADE, a DP Beta-Binomial VI for subclonal reconstruction
 
 A self-contained, **PyClone-VI-style** pipeline that reconstructs the subclonal
 architecture of a tumour from a single bulk DNA-sequencing sample, and scores its
@@ -43,7 +43,7 @@ inference (CAVI)**. It is deterministic, depends only on `numpy`/`scipy`, and ru
 - **Purity is inferred** from the data by maximising the variational ELBO.
 - **Principled cluster-number control** via ICL-guided agglomerative merging (Baudry 2010),
   replacing hand-tuned merge thresholds; its entropy term is tempered (`icl_ent_w`) so sparse
-  real subclones survive — lifting 1B past the old ~0.79 ceiling to ~0.81.
+  real subclones survive, lifting 1B past the old ~0.79 ceiling to ~0.81.
 
 ## Results
 
@@ -87,11 +87,11 @@ CLADE/
 
 ## Requirements
 
-- **Python 3** with `numpy` and `scipy` — for everything: the engine, all steps, and the
+- **Python 3** with `numpy` and `scipy` for everything: the engine, all steps, and the
   scorer. No Python 2 is needed (the vendored SMC-Het scorer was ported to Python 3).
 - *(optional)* a SLURM cluster to run step 1 as an array job over the 51 samples.
 
-No installation step is needed — clone the repo and run the scripts from its root.
+No installation step is needed. Clone the repo and run the scripts from its root.
 
 ## Quickstart
 
@@ -142,9 +142,9 @@ All knobs live in [`config.py`](config.py) (`PARAMS`). The defaults reproduce th
 
 ## Data
 
-Inputs are vendored into the repo — no external symlinks are needed.
+Inputs are vendored into the repo, so no external symlinks are needed.
 
-**Input mutation tables** — `DREAM_data/<sid>_mutation_table_with_multiplicity.csv`, one row
+**Input mutation tables**, `DREAM_data/<sid>_mutation_table_with_multiplicity.csv`, one row
 per somatic SNV:
 
 | Column        | Meaning |
@@ -154,35 +154,35 @@ per somatic SNV:
 | `Ref_count`, `Alt_count` | reference / variant supporting reads (depth = ref + alt) |
 | `multiplicity`           | number of tumour chromosome copies carrying the mutation |
 
-**Ground truth** — `scoring/truth/<sid>/` contains `*.truth.{1A,1B,1C,2A}.txt`,
+**Ground truth** in `scoring/truth/<sid>/` contains `*.truth.{1A,1B,1C,2A}.txt`,
 `*.battenberg.txt`, `*.mutect.vcf`, and `*.truth.scoring_vcf.vcf` (the VCF that fixes the
 mutation ordering for scoring).
 
-**Cohort** — 51 tumours: 25 `P*` (real DECODE tumours), 9 `S*`, 17 `T*` (simulated).
+**Cohort**, 51 tumours: 25 `P*` (real DECODE tumours), 9 `S*`, 17 `T*` (simulated).
 
 **Not committed** (see [`.gitignore`](.gitignore)): the 2B co-clustering ground truth
-`scoring/truth/**/*.truth.2B.gz` (up to ~2 GB/file — over GitHub's 100 MB/file limit) is kept
+`scoring/truth/**/*.truth.2B.gz` (up to ~2 GB/file, over GitHub's 100 MB/file limit) is kept
 on disk locally but not published; provide it separately to score challenge 2B. Generated
 outputs (`results/`, `scoring/pred_soft/`, `scoring/scores/` incl. `scores_summary.csv`, `logs/`)
-are gitignored — `results/` and `scoring/scores/` keep an empty `.gitkeep` so the layout exists
+are gitignored, but `results/` and `scoring/scores/` keep an empty `.gitkeep` so the layout exists
 on a fresh clone.
 
 ## Outputs
 
-- **`results/<sid>_dpbbvi.npz`** — per-sample clustering: `chrom`, `pos`, `hard` (per-mutation
+- **`results/<sid>_dpbbvi.npz`**, per-sample clustering: `chrom`, `pos`, `hard` (per-mutation
   cluster id), `soft` (N×K responsibilities), `ccf` (per-cluster CCF), `counts`, `purity`,
   `n_clusters`, `elbo`.
-- **`scoring/pred_soft/<sid>/<sid>_estimate.{1A,1B,1C,2A}.txt`** (+ `2B.txt.gz`) — the SMC-Het
+- **`scoring/pred_soft/<sid>/<sid>_estimate.{1A,1B,1C,2A}.txt`** (+ `2B.txt.gz`), the SMC-Het
   prediction files (see [step 2](#7-from-clusters-to-smc-het-estimate-files-step-2)).
-- **`scoring/scores/scores_summary.csv`** — the aggregated scores, one row per sample.
+- **`scoring/scores/scores_summary.csv`**, the aggregated scores, one row per sample.
 
 ## Scoring harness (self-contained)
 
 The SMC-Het scorer is **vendored** into this repo at [`smc_het_eval/`](smc_het_eval/) (four
-files: `SMCScoring.py` + `scoring_harness_optimized.py` + `permutations.py` + `__init__.py` —
+files: `SMCScoring.py` + `scoring_harness_optimized.py` + `permutations.py` + `__init__.py`,
 the exact import closure needed for challenges 1A/1B/1C/2A/2B). It was **ported to Python 3**
 (from the original Python 2, via `2to3`) and is run as a subprocess by
-[`steps/03_score.py`](steps/03_score.py) using the same Python 3 interpreter — no Python 2 needed.
+[`steps/03_score.py`](steps/03_score.py) using the same Python 3 interpreter, so no Python 2 is needed.
 
 ---
 
@@ -248,7 +248,7 @@ Two ideas make this tractable:
    ```
 
    is precomputed once as an `N×G` matrix ([`_emission_loglik`](model/dpbb_vi.py)) and
-   *shared by every cluster* — a cluster only differs through its grid posterior over `g`.
+   *shared by every cluster*, since a cluster only differs through its grid posterior over `g`.
    Binomial if `precision=None`, Beta-Binomial with precision `s` otherwise.
 
 2. **Truncated DP**: at most `K_max` components, but the stick-breaking prior drives unused
@@ -265,7 +265,7 @@ q(z, v, φ) = ∏_n q(z_n) · ∏_k q(v_k) · ∏_k q(φ_k)
 and maximise the **ELBO** (evidence lower bound) by coordinate ascent ([`_fit_once`](model/dpbb_vi.py)).
 Each sweep updates, in closed form:
 
-- **Cluster CCF** `q(φ_k)` — a categorical over the grid:
+- **Cluster CCF** `q(φ_k)`, a categorical over the grid:
   ```
   log Phi_k  ∝  log(1/G)  +  Σ_n r_nk · LL[n,:]
   ```
@@ -301,7 +301,7 @@ is the variational analogue of the multi-restart fix used by samplers.
 
 Under neutral tumour evolution the subclonal mutation spectrum has a power-law tail
 `M(f) ∝ f^(−γ)` (Williams et al., Nat Genet 2016). A plain Beta mixture "explains"
-this smooth continuum by **over-splitting it into ghost clusters** — the dominant failure mode
+this smooth continuum by **over-splitting it into ghost clusters**, the dominant failure mode
 on the simulated `T*` samples (1B collapses).
 
 The fix ([`neutral_tail_grid`](model/dpbb_vi.py), enabled by `use_tail`) adds a **fixed**
@@ -313,7 +313,7 @@ is its true **marginal** log-likelihood
 log Σ_g g_tail[g] · p(b_n | g)      (logsumexp)
 ```
 
-**not** the mean-field `E[log p]` — because a diffuse distribution would always lose
+**not** the mean-field `E[log p]`, because a diffuse distribution would always lose
 the mean-field comparison to a peaked Beta. The tail absorbs the diffuse neutral mutations so
 the Beta clusters stop over-splitting. It is **not** a subclonal lineage: in post-processing it
 is dropped and its mutations are reassigned to the nearest Beta cluster (so it does not inflate
@@ -325,7 +325,7 @@ Purity is seeded from clonal diploid heterozygous SNVs, where `VAF ≈ ρ/2`
 ([`estimate_purity`](model/dpbb_vi.py)), or from the provided Battenberg `cellularity_ploidy.txt`.
 With `purity_search=True`, [`01_cluster.py`](steps/01_cluster.py) then **infers** purity by
 fitting the VI on a grid of `ρ` around the seed (`purity_span`, `purity_steps`) and keeping
-the `ρ` that **maximises the ELBO** — a lower bound on `log p(data | ρ)`. The
+the `ρ` that **maximises the ELBO**, a lower bound on `log p(data | ρ)`. The
 selected `ρ` is the 1A prediction.
 
 ## 7. From clusters to SMC-Het estimate files (step 2)
@@ -337,13 +337,13 @@ comparisons are apples-to-apples:
 - **VCF alignment** (`build_alignment`): each VCF mutation is matched by `chrom_pos`. Mutations
   present in our table take their cluster id / soft vector; mutations **absent** from our table
   default to **cluster 1** (clonal), with soft mass `[1, 0, …]`.
-- **1A** — the purity.
-- **1C** — tabulate per-cluster counts over the VCF-aligned assignment, keep clusters with
+- **1A**, the purity.
+- **1C**, tabulate per-cluster counts over the VCF-aligned assignment, keep clusters with
   ≥1 mutation; the SMC-Het *cellular prevalence* is `CCF × purity` (clonal CCF=1 → prevalence=
   purity).
-- **1B** — the number of kept clusters.
-- **2A** — the per-mutation cluster id, in VCF order.
-- **2B** *(optional, `--with-2b`)* — the soft co-clustering matrix `CCM = P · Pᵀ`
+- **1B**, the number of kept clusters.
+- **2A**, the per-mutation cluster id, in VCF order.
+- **2B** *(optional, `--with-2b`)*, the soft co-clustering matrix `CCM = P · Pᵀ`
   (probability that two mutations share a cluster), gzipped; skipped above `--max-2b-n` to avoid
   `O(N²)` blow-up.
 
@@ -356,12 +356,12 @@ VCF where required), then aggregates everything into `scores_summary.csv`.
 
 ## References
 
-- **PyClone-VI** — Gillis & Roth, *BMC Bioinformatics* 2020 (variational, CCF-grid trick).
-- **Stick-breaking DP** — Sethuraman 1994; **mean-field DP** — Blei & Jordan 2006.
-- **ICL** — Biernacki, Celeux & Govaert 2000; **ICL-guided merging** — Baudry et al. 2010.
-- **Neutral tumour evolution (1/f)** — Williams et al., *Nat Genet* 2016; **MOBSTER** —
+- **PyClone-VI**, Gillis & Roth, *BMC Bioinformatics* 2020 (variational, CCF-grid trick).
+- **Stick-breaking DP**, Sethuraman 1994; **mean-field DP**, Blei & Jordan 2006.
+- **ICL**, Biernacki, Celeux & Govaert 2000; **ICL-guided merging**, Baudry et al. 2010.
+- **Neutral tumour evolution (1/f)**, Williams et al., *Nat Genet* 2016; **MOBSTER**,
   Caravagna et al., *Nat Genet* 2020.
-- **Power-law MLE** — Clauset, Shalizi & Newman 2009.
-- **Coarsened posterior / penalty tempering** — Miller & Dunson 2019.
-- **SMC-Het / DREAM** — Salcedo et al., *Nat Biotechnol* 2020 (the scoring harness in
+- **Power-law MLE**, Clauset, Shalizi & Newman 2009.
+- **Coarsened posterior / penalty tempering**, Miller & Dunson 2019.
+- **SMC-Het / DREAM**, Salcedo et al., *Nat Biotechnol* 2020 (the scoring harness in
   `smc_het_eval/`).
