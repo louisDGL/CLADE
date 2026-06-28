@@ -1,4 +1,6 @@
-# CLADE, a DP Beta-Binomial VI for subclonal reconstruction
+# CLADE
+
+**CLonal Architecture by Dirichlet-process variational Estimation.**
 
 A self-contained, **PyClone-VI-style** pipeline that reconstructs the subclonal
 architecture of a tumour from a single bulk DNA-sequencing sample, and scores its
