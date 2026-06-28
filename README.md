@@ -59,13 +59,8 @@ engine (`DECODE_21`). Higher is better; full discussion in [`RESULTS.md`](RESULT
 | 1A (purity)        | 0.962   | 0.961               |
 | 1B (cluster count) | 0.808   | 0.833               |
 | 1C (prevalence)    | 0.937   | 0.942               |
-| runtime            | minutes | hours               |
+| runtime            | ~ minutes | ~ hours               |
 
-**Takeaway.** CLADE is a strictly better *assignment* engine and far faster. Its old
-*cluster-count* (1B) ceiling of ~0.79 was lifted to **0.808** by tempering the ICL entropy term
-(`icl_ent_w=0.25`) — the neutral tail already guards against over-split, so the entropy no longer
-needs to, and stops merging away sparse real subclones. The gain to 1B came with **no cost** to
-2A/1C (both slightly improved). See [`RESULTS.md`](RESULTS.md) for the full investigation.
 
 ## Repository layout
 
