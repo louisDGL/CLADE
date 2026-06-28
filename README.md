@@ -2,8 +2,8 @@
 
 A self-contained, **PyClone-VI-style** pipeline that reconstructs the subclonal
 architecture of a tumour from a single bulk DNA-sequencing sample, and scores its
-predictions with the **SMC-Het / DREAM Somatic Mutation Calling — Tumour Heterogeneity**
-metrics (sub-challenges 1A, 1B, 1C, 2A, 2B).
+predictions with the **SMC-Het / DREAM Somatic Mutation Dataset**
+(sub-challenges 1A, 1B, 1C, 2A, 2B).
 
 The clustering engine is a **truncated Dirichlet-Process mixture of Beta-Binomial
 emissions**, with each cluster's cellular fraction represented as a categorical over a
@@ -12,7 +12,7 @@ inference (CAVI)**. It is deterministic, depends only on `numpy`/`scipy`, and ru
 **minutes for all 51 tumours** (vs hours for ABC/SMC samplers).
 
 > **In one line:** infer *how many* tumour subclones there are, *what fraction of cells*
-> each occupies, and *which mutation belongs to which* — directly from read counts.
+> each occupies, and *which mutation belongs to which* directly from read counts.
 
 ---
 
@@ -35,18 +35,15 @@ inference (CAVI)**. It is deterministic, depends only on `numpy`/`scipy`, and ru
 ## Highlights
 
 - **Nonparametric** cluster number: a truncated DP (stick-breaking) *infers* the number
-  of subclones instead of selecting it with a separate criterion.
-- **Per-mutation Beta-Binomial** likelihood → native **soft** assignment and read-count
+  of subclones.
+- **Per-mutation Beta-Binomial** likelihood: native **soft** assignment and read-count
   overdispersion handling. This is the source of the engine's main strength (challenge 2A).
 - **Neutral 1/f tail** component (MOBSTER-style) absorbs the diffuse neutral mutations so
   the Beta clusters stop over-splitting the tail.
-- **Purity is inferred** from the data by maximising the variational ELBO (sub-challenge 1A
-  comes out as a by-product, not a handed-in input).
+- **Purity is inferred** from the data by maximising the variational ELBO.
 - **Principled cluster-number control** via ICL-guided agglomerative merging (Baudry 2010),
   replacing hand-tuned merge thresholds; its entropy term is tempered (`icl_ent_w`) so sparse
   real subclones survive — lifting 1B past the old ~0.79 ceiling to ~0.81.
-- **Fully self-contained**: input data, ground truth, and the SMC-Het scorer (ported to
-  Python 3) are all vendored into this repository — no Python 2 required.
 
 ## Results
 
@@ -56,11 +53,15 @@ engine (`DECODE_21`). Higher is better; full discussion in [`RESULTS.md`](RESULT
 | Sub-challenge      | CLADE   | DECODE_21 (SFS/ABC) |
 |--------------------|:-------:|:-------------------:|
 | 2A (assignment)    | 0.600   | 0.567               |
+| 2B (co-clustering) | 0.656   | 0.628               |
 | 1A (purity)        | 0.962   | 0.961               |
 | 1B (cluster count) | 0.808   | 0.833               |
 | 1C (prevalence)    | 0.937   | 0.942               |
 | runtime            | ~ minutes | ~ hours               |
 
+
+2B is averaged over the 45 tumours both methods scored (the few largest exceed a node's memory
+for the N×N co-clustering matrix); the other rows are over the full cohort.
 
 ## Repository layout
 
